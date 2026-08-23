@@ -15,6 +15,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -152,6 +153,25 @@ public class SessionManager extends SessionManagerCore {
         updateSession();
     }
 
+    /**
+     * Record that a player joined through the Xbox session, so the friend expiry
+     * counts them as active. Joins through other paths (direct IP, join codes,
+     * the server list) are deliberately not tracked.
+     *
+     * @param xuid The XUID of the player that joined
+     */
+    private void recordJoin(String xuid) {
+        try {
+            StorageManager.PlayerHistoryStorage playerHistory = storageManager().playerHistory();
+            Instant previous = playerHistory.lastSeen(xuid);
+            Instant now = Instant.now();
+            playerHistory.lastSeen(xuid, now);
+            logger.debug("Recorded a join through the Xbox session for XUID " + xuid + " at " + now + " (previous record: " + (previous == null ? "none" : previous) + ")");
+        } catch (IOException e) {
+            logger.error("Failed to record the join of XUID " + xuid, e);
+        }
+    }
+
     @Override
     public void updateNonces() throws SessionUpdateException {
         // Get session
@@ -199,6 +219,10 @@ public class SessionManager extends SessionManagerCore {
                     nonces.put(xuid, hex.toString());
 
                     logger.debug("Generated nonce for XUID " + xuid + ": " + hex);
+
+                    // A new nonce means a player joined through the Xbox session, the only
+                    // join path the friend expiry tracks
+                    recordJoin(xuid);
 
                     hasChanges = true;
                 }

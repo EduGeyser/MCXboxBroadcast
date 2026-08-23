@@ -255,13 +255,28 @@ public class FriendManager {
                 Map<String, String> xuidGamertagMap = new HashMap<>();
                 lastFriendCache().forEach(person -> xuidGamertagMap.put(person.xuid, person.gamertag));
 
-                for (Map.Entry<String, Instant> entry : playerHistory.all().entrySet()) {
+                Instant cutoff = Instant.now().minusSeconds(TimeUnit.DAYS.toSeconds(friendSyncConfig.expiry().days()));
+                Map<String, Instant> history = playerHistory.all();
+                int expired = 0;
+                int strangers = 0;
+
+                for (Map.Entry<String, Instant> entry : history.entrySet()) {
                     String xuid = entry.getKey();
                     Instant lastSeen = entry.getValue();
 
-                    if (lastSeen.isBefore(Instant.now().minusSeconds(TimeUnit.DAYS.toSeconds(friendSyncConfig.expiry().days())))) {
+                    if (!xuidGamertagMap.containsKey(xuid)) {
+                        // Friends of friends and invited players join the session without being
+                        // friends, so the history can hold players we never befriended
+                        strangers++;
+                        logger.debug(xuid + " is not a friend (last seen " + lastSeen + "), clearing their history");
+                        playerHistory.clear(xuid);
+                        continue;
+                    }
+
+                    if (lastSeen.isBefore(cutoff)) {
+                        expired++;
                         try {
-                            logger.info("Removing player " + xuid + " from friends due to inactivity");
+                            logger.info("Removing " + xuidGamertagMap.get(xuid) + " (" + xuid + ") from friends, last seen " + lastSeen + " is before the cutoff " + cutoff);
                             remove(xuid, null);
                         } catch (Exception e) {
                             if (e.getMessage().startsWith("429: ")) {
@@ -272,6 +287,8 @@ public class FriendManager {
                         }
                     }
                 }
+
+                logger.debug("Checked " + history.size() + " tracked players against " + xuidGamertagMap.size() + " friends with cutoff " + cutoff + ": " + expired + " expired, " + strangers + " not friends");
             } catch (IOException e) {
                 logger.error("Failed to clean up friends list", e);
             }
