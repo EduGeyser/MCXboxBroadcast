@@ -26,11 +26,11 @@ public class CreateSessionRequest extends JoinSessionRequest {
             sessionInfo.getXuid(),
             "",
             sessionInfo.getWorldName(),
-            "Survival",
+            "Adventure",
             sessionInfo.getProtocol(),
             sessionInfo.getVersion(),
             false,
-            false,
+            true,
             nonces
         ));
     }
