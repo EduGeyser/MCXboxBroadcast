@@ -6,7 +6,6 @@ import com.rtm516.mcxboxbroadcast.core.exceptions.SessionCreationException;
 import com.rtm516.mcxboxbroadcast.core.exceptions.SessionUpdateException;
 import com.rtm516.mcxboxbroadcast.core.models.session.CreateSessionRequest;
 import com.rtm516.mcxboxbroadcast.core.models.session.CreateSessionResponse;
-import com.rtm516.mcxboxbroadcast.core.models.session.member.SessionMember;
 import com.rtm516.mcxboxbroadcast.core.notifications.NotificationManager;
 import com.rtm516.mcxboxbroadcast.core.storage.StorageManager;
 import org.java_websocket.util.NamedThreadFactory;
@@ -15,17 +14,14 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Simple manager to authenticate and create sessions on Xbox
@@ -37,7 +33,6 @@ public class SessionManager extends SessionManagerCore {
     private CoreConfig.FriendSyncConfig friendSyncConfig;
     private Runnable restartCallback;
 
-    private Map<String, String> nonces;
 
     /**
      * Create an instance of SessionManager
@@ -50,7 +45,6 @@ public class SessionManager extends SessionManagerCore {
         super(storageManager, notificationManager, logger.prefixed("Primary Session"));
         this.scheduledThreadPool = Executors.newScheduledThreadPool(5, new NamedThreadFactory("MCXboxBroadcast Thread"));
         this.subSessionManagers = new HashMap<>();
-        this.nonces = new HashMap<>();
     }
 
     @Override
@@ -151,89 +145,14 @@ public class SessionManager extends SessionManagerCore {
     public void updateSession(SessionInfo sessionInfo) throws SessionUpdateException {
         this.sessionInfo.updateSessionInfo(sessionInfo);
         updateSession();
-    }
 
-    /**
-     * Record that a player joined through the Xbox session, so the friend expiry
-     * counts them as active. Joins through other paths (direct IP, join codes,
-     * the server list) are deliberately not tracked.
-     *
-     * @param xuid The XUID of the player that joined
-     */
-    private void recordJoin(String xuid) {
-        try {
-            StorageManager.PlayerHistoryStorage playerHistory = storageManager().playerHistory();
-            Instant previous = playerHistory.lastSeen(xuid);
-            Instant now = Instant.now();
-            playerHistory.lastSeen(xuid, now);
-            logger.debug("Recorded a join through the Xbox session for XUID " + xuid + " at " + now + " (previous record: " + (previous == null ? "none" : previous) + ")");
-        } catch (IOException e) {
-            logger.error("Failed to record the join of XUID " + xuid, e);
-        }
-    }
-
-    @Override
-    public void updateNonces() throws SessionUpdateException {
-        // Get session
-        HttpRequest createSessionRequest = HttpRequest.newBuilder()
-            .uri(URI.create(Constants.CREATE_SESSION.formatted(this.sessionInfo.getSessionId())))
-            .header("Content-Type", "application/json")
-            .header("Authorization", getTokenHeader())
-            .header("x-xbl-contract-version", "107")
-            .GET()
-            .build();
-
-        try {
-            HttpResponse<String> createSessionResponse = httpClient.send(createSessionRequest, HttpResponse.BodyHandlers.ofString());
-            CreateSessionResponse sessionResponse = Constants.GSON.fromJson(createSessionResponse.body(), CreateSessionResponse.class);
-
-            if (sessionResponse == null) {
-                throw new SessionUpdateException("Failed to get session for nonces, joining will not work: sessionResponse is null");
+        // Sub-sessions host their own sessions, so give each the same updated values
+        for (Map.Entry<String, SubSessionManager> entry : subSessionManagers.entrySet()) {
+            try {
+                entry.getValue().syncFromParent();
+            } catch (SessionUpdateException e) {
+                logger.error("Failed to update sub-session " + entry.getKey(), e);
             }
-
-            boolean hasChanges = false;
-
-            // Collect active XUIDs from the session
-            Set<String> activeXuids = new HashSet<>();
-            for (Map.Entry<String, SessionMember> entry : sessionResponse.members().entrySet()) {
-                activeXuids.add(entry.getValue().constants().get("system").xuid());
-            }
-
-            // Remove our own xuid
-            activeXuids.remove(sessionInfo.getXuid());
-
-            // Remove stale nonces
-            hasChanges = nonces.keySet().retainAll(activeXuids);
-
-            for (String xuid : activeXuids) {
-                if (!nonces.containsKey(xuid)) {
-                    // Generate a nonce
-                    byte[] bytes = new byte[8];
-                    ThreadLocalRandom.current().nextBytes(bytes);
-                    StringBuilder hex = new StringBuilder(16);
-                    for (byte b : bytes) {
-                        hex.append(String.format("%02x", b));
-                    }
-
-                    // Put the nonce
-                    nonces.put(xuid, hex.toString());
-
-                    logger.debug("Generated nonce for XUID " + xuid + ": " + hex);
-
-                    // A new nonce means a player joined through the Xbox session, the only
-                    // join path the friend expiry tracks
-                    recordJoin(xuid);
-
-                    hasChanges = true;
-                }
-            }
-
-            // Only update the session properties if something changed
-            if (hasChanges) {
-                updateSession();
-            }
-        } catch (IOException | InterruptedException e) {
-            throw new SessionUpdateException("Failed to get session for nonces, joining will not work: " + e.getMessage());
         }
     }
 

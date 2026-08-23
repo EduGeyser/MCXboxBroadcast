@@ -8,8 +8,10 @@ import com.rtm516.mcxboxbroadcast.core.exceptions.SessionCreationException;
 import com.rtm516.mcxboxbroadcast.core.exceptions.SessionUpdateException;
 import com.rtm516.mcxboxbroadcast.core.models.session.CreateHandleRequest;
 import com.rtm516.mcxboxbroadcast.core.models.session.CreateHandleResponse;
+import com.rtm516.mcxboxbroadcast.core.models.session.CreateSessionResponse;
 import com.rtm516.mcxboxbroadcast.core.models.session.SessionRef;
 import com.rtm516.mcxboxbroadcast.core.models.session.SocialSummaryResponse;
+import com.rtm516.mcxboxbroadcast.core.models.session.member.SessionMember;
 import com.rtm516.mcxboxbroadcast.core.notifications.NotificationManager;
 import com.rtm516.mcxboxbroadcast.core.storage.StorageManager;
 import net.raphimc.minecraftauth.bedrock.BedrockAuthManager;
@@ -21,8 +23,14 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -41,6 +49,7 @@ public abstract class SessionManagerCore {
 
     protected RtaWebsocketClient rtaWebsocket;
     protected ExpandedSessionInfo sessionInfo;
+    protected final Map<String, String> nonces = new HashMap<>();
     protected String lastSessionResponse;
 
     protected boolean initialized = false;
@@ -205,7 +214,7 @@ public abstract class SessionManagerCore {
      * @throws SessionCreationException If the initial creation of the session fails
      * @throws SessionUpdateException If the updating of the session information fails
      */
-    private void createSession() throws SessionCreationException, SessionUpdateException {
+    protected void createSession() throws SessionCreationException, SessionUpdateException {
         // Get the token for authentication
         BedrockAuthManager manager = getAuthManager();
         String token;
@@ -306,7 +315,90 @@ public abstract class SessionManagerCore {
      * @throws SessionUpdateException If the update fails
      */
     public void updateNonces() throws SessionUpdateException {
-        // Nothing by default
+        if (this.sessionInfo == null) {
+            return;
+        }
+
+        // Get session
+        HttpRequest getSessionRequest = HttpRequest.newBuilder()
+            .uri(URI.create(Constants.CREATE_SESSION.formatted(getSessionId())))
+            .header("Content-Type", "application/json")
+            .header("Authorization", getTokenHeader())
+            .header("x-xbl-contract-version", "107")
+            .GET()
+            .build();
+
+        try {
+            HttpResponse<String> getSessionResponse = httpClient.send(getSessionRequest, HttpResponse.BodyHandlers.ofString());
+            CreateSessionResponse sessionResponse = Constants.GSON.fromJson(getSessionResponse.body(), CreateSessionResponse.class);
+
+            if (sessionResponse == null) {
+                throw new SessionUpdateException("Failed to get session for nonces, joining will not work: sessionResponse is null");
+            }
+
+            boolean hasChanges = false;
+
+            // Collect active XUIDs from the session
+            Set<String> activeXuids = new HashSet<>();
+            for (Map.Entry<String, SessionMember> entry : sessionResponse.members().entrySet()) {
+                activeXuids.add(entry.getValue().constants().get("system").xuid());
+            }
+
+            // Remove our own xuid
+            activeXuids.remove(sessionInfo.getXuid());
+
+            // Remove stale nonces
+            hasChanges = nonces.keySet().retainAll(activeXuids);
+
+            for (String xuid : activeXuids) {
+                if (!nonces.containsKey(xuid)) {
+                    // Generate a nonce
+                    byte[] bytes = new byte[8];
+                    ThreadLocalRandom.current().nextBytes(bytes);
+                    StringBuilder hex = new StringBuilder(16);
+                    for (byte b : bytes) {
+                        hex.append(String.format("%02x", b));
+                    }
+
+                    // Put the nonce
+                    nonces.put(xuid, hex.toString());
+
+                    logger.debug("Generated nonce for XUID " + xuid + ": " + hex);
+
+                    // A new nonce means a player joined through the Xbox session, the only
+                    // join path the friend expiry tracks
+                    recordJoin(xuid);
+
+                    hasChanges = true;
+                }
+            }
+
+            // Only update the session properties if something changed
+            if (hasChanges) {
+                updateSession();
+            }
+        } catch (IOException | InterruptedException e) {
+            throw new SessionUpdateException("Failed to get session for nonces, joining will not work: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Record that a player joined through the Xbox session, so the friend expiry
+     * counts them as active. Joins through other paths (direct IP, join codes,
+     * the server list) are deliberately not tracked.
+     *
+     * @param xuid The XUID of the player that joined
+     */
+    private void recordJoin(String xuid) {
+        try {
+            StorageManager.PlayerHistoryStorage playerHistory = storageManager().playerHistory();
+            Instant previous = playerHistory.lastSeen(xuid);
+            Instant now = Instant.now();
+            playerHistory.lastSeen(xuid, now);
+            logger.debug("Recorded a join through the Xbox session for XUID " + xuid + " at " + now + " (previous record: " + (previous == null ? "none" : previous) + ")");
+        } catch (IOException e) {
+            logger.error("Failed to record the join of XUID " + xuid, e);
+        }
     }
 
     /**
