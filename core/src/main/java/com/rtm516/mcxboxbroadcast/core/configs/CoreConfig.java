@@ -121,7 +121,7 @@ public interface CoreConfig {
         @ConfigSerializable
         interface ExpiryConfig {
             @Comment("Should we unfriend people that haven't joined the server in a while")
-            @DefaultBoolean(true)
+            @DefaultBoolean(false)
             boolean enabled();
 
             @Comment("The amount of time in days before a friend is considered expired")
