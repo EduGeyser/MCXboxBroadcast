@@ -305,6 +305,11 @@ public class FriendManager {
         if (friendSyncConfig.autoFollow() || friendSyncConfig.autoUnfollow()) {
             sessionManager.scheduledThread().scheduleWithFixedDelay(() -> {
                 try {
+                    // The RTA websocket event is the primary accept trigger, but
+                    // requests that arrive while the websocket is down would stay
+                    // pending until the next restart. This poll catches those.
+                    acceptPendingFriendRequests();
+
                     for (FollowerResponse.Person person : get()) {
                         // Make sure we are not targeting a subaccount (eg: split screen)
                         if (isGuestAccount(person.xuid)) {
