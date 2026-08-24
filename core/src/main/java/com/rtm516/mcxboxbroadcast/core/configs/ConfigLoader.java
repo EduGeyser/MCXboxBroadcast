@@ -3,7 +3,6 @@ package com.rtm516.mcxboxbroadcast.core.configs;
 import org.spongepowered.configurate.CommentedConfigurationNode;
 import org.spongepowered.configurate.ConfigurateException;
 import org.spongepowered.configurate.interfaces.InterfaceDefaultOptions;
-import org.spongepowered.configurate.objectmapping.meta.Processor;
 import org.spongepowered.configurate.transformation.ConfigurationTransformation;
 import org.spongepowered.configurate.transformation.TransformAction;
 import org.spongepowered.configurate.yaml.NodeStyle;
@@ -24,10 +23,6 @@ public class ConfigLoader {
             .addAction(path("remote-port"), moveTo("session"))
             .addAction(path("update-interval"), moveTo("session"))
 
-            // Standalone only settings
-            .addAction(path("suppress-session-update-info"), rename("suppress-session-update-message"))
-            .addAction(path("debug-log"), rename("debug-mode"))
-
             // Shared settings
             .addAction(path("slack-webhook"), rename("notifications"))
             .addAction(path("friend-sync", "should-expire"), renameAndMove("friend-sync", "expiry", "enabled"))
@@ -37,8 +32,8 @@ public class ConfigLoader {
             .build())
         .build();
 
-    public static CoreConfig loadConfig(File configFile, String platformName) throws ConfigurateException {
-        YamlConfigurationLoader loader = createLoader(configFile, platformName);
+    public static CoreConfig loadConfig(File configFile) throws ConfigurateException {
+        YamlConfigurationLoader loader = createLoader(configFile);
 
         CommentedConfigurationNode node = loader.load();
         boolean originallyEmpty = !configFile.exists() || node.isNull();
@@ -60,27 +55,13 @@ public class ConfigLoader {
         return config;
     }
 
-    private static YamlConfigurationLoader createLoader(File configFile, String platformName) {
+    private static YamlConfigurationLoader createLoader(File configFile) {
         return YamlConfigurationLoader.builder()
             .file(configFile)
             .indent(2)
             .nodeStyle(NodeStyle.BLOCK)
-            .defaultOptions(options -> InterfaceDefaultOptions.addTo(options, builder -> {
-                builder.addProcessor(ExcludePlatform.class, excludePlatform(platformName));
-            }))
+            .defaultOptions(InterfaceDefaultOptions::addTo)
             .build();
-    }
-
-    private static Processor.Factory<ExcludePlatform, Object> excludePlatform(String thisPlatform) {
-        return (data, fieldType) -> (value, destination) -> {
-            for (String platform : data.platforms()) {
-                if (thisPlatform.equals(platform)) {
-                    //noinspection DataFlowIssue
-                    destination.parent().removeChild(destination.key());
-                    break;
-                }
-            }
-        };
     }
 
     private static TransformAction renameAndMove(String... newPath) {

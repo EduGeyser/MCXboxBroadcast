@@ -19,16 +19,6 @@ public interface CoreConfig {
     @Comment("Notification settings (e.g., Slack/Discord webhook)")
     NotificationConfig notifications();
 
-    @Comment("Enable debug logging")
-    @ExcludePlatform(platforms = {"Extension"})
-    @DefaultBoolean(false)
-    boolean debugMode();
-
-    @Comment("Suppresses \"Updated session!\" log into debug")
-    @ExcludePlatform(platforms = {"Extension"})
-    @DefaultBoolean(false)
-    boolean suppressSessionUpdateMessage();
-
     @Comment("Do not change!")
     @SuppressWarnings("unused")
     default int configVersion() {
@@ -43,55 +33,6 @@ public interface CoreConfig {
         @DefaultNumeric(30)
         @NumericRange(from = 20, to = Integer.MAX_VALUE)
         int updateInterval();
-
-        @Comment("Should we query the bedrock server to sync the session information")
-        @ExcludePlatform(platforms = {"Extension"})
-        @DefaultBoolean(true)
-        boolean queryServer();
-
-        @Comment("""
-            This uses checker.geysermc.org for querying if the native ping fails
-            This can be useful in the case of docker networks or routing problems causing the native ping to fail""")
-        @ExcludePlatform(platforms = {"Extension"})
-        @DefaultBoolean(false)
-        boolean webQueryFallback();
-
-        @Comment("Fallback to config values if all other server query methods fail")
-        @ExcludePlatform(platforms = {"Extension"})
-        @DefaultBoolean(false)
-        boolean configFallback();
-
-        @Comment("The data to broadcast over xbox live, this is the default if querying is enabled")
-        @ExcludePlatform(platforms = {"Extension"})
-        SessionInfo sessionInfo();
-
-        @ConfigSerializable
-        interface SessionInfo {
-            @Comment("The host name to broadcast")
-            @DefaultString("Geyser Test Server")
-            String hostName();
-
-            @Comment("The world name to broadcast")
-            @DefaultString("GeyserMC Demo & Test Server")
-            String worldName();
-
-            @Comment("The current number of players")
-            @DefaultNumeric(0)
-            int players();
-
-            @Comment("The maximum number of players")
-            @DefaultNumeric(20)
-            int maxPlayers();
-
-            @Comment("The IP address of the server")
-            @DefaultString("test.geysermc.org")
-            String ip();
-
-            @Comment("The port of the server")
-            @DefaultNumeric(19132)
-            @NumericRange(from = 1, to = 65535)
-            int port();
-        }
     }
 
     @ConfigSerializable

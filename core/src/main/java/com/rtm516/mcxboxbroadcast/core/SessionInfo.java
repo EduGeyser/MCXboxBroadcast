@@ -1,7 +1,5 @@
 package com.rtm516.mcxboxbroadcast.core;
 
-import com.rtm516.mcxboxbroadcast.core.configs.CoreConfig;
-
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -16,15 +14,6 @@ public class SessionInfo {
     private int port;
 
     public SessionInfo() {
-    }
-
-    public SessionInfo(CoreConfig.SessionConfig.SessionInfo config) {
-        this.hostName = config.hostName();
-        this.worldName = config.worldName();
-        this.players = config.players();
-        this.maxPlayers = config.maxPlayers();
-        this.ip = config.ip();
-        this.port = config.port();
     }
 
     public SessionInfo(String hostName, String worldName, int players, int maxPlayers, String ip, int port) {

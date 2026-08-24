@@ -142,7 +142,7 @@ public class MCXboxBroadcastExtension implements Extension {
         }
 
         try {
-            config = ConfigLoader.loadConfig(configFile, "Extension");
+            config = ConfigLoader.loadConfig(configFile);
         } catch (IOException e) {
             logger.error("Failed to load config, extension will not start!", e);
             this.disable();
