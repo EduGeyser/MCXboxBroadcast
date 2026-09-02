@@ -28,6 +28,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
@@ -239,7 +240,11 @@ public abstract class SessionManagerCore {
                 // Update the current session connection ID
                 this.sessionInfo.setConnectionId(connectionId);
             } catch (InterruptedException | ExecutionException | TimeoutException e) {
-                throw new SessionCreationException("Unable to get connectionId for session: " + e.getMessage());
+                // The connect is asynchronous, so the socket can still open after this
+                // timeout. Close it, otherwise the next connection check sees an open
+                // socket without a registered connection as healthy and never retries.
+                rtaWebsocket.close();
+                throw new SessionCreationException("Unable to get connectionId for session: " + e.getClass().getSimpleName() + (e.getMessage() == null ? "" : " " + e.getMessage()));
             }
 
         }
@@ -443,7 +448,7 @@ public abstract class SessionManagerCore {
      * This should be called before any updates to the session otherwise they might fail
      */
     protected void checkConnection() {
-        boolean rtaIsOpen = this.rtaWebsocket != null && this.rtaWebsocket.isOpen();
+        boolean rtaIsOpen = this.rtaWebsocket != null && this.rtaWebsocket.isOpen() && hasRegisteredConnection();
 
         if (!rtaIsOpen) {
             try {
@@ -468,6 +473,22 @@ public abstract class SessionManagerCore {
             logger.error("Failed to get auth header", e);
             return "";
         }
+    }
+
+    /**
+     * An open socket alone does not prove a working connection. A socket that never
+     * received its connection ID, or received one that the session is not bound to,
+     * is unknown to RTA: it never gets recycled, so it would pass an open check forever.
+     *
+     * @return True if the websocket holds the connection ID the session is bound to
+     */
+    private boolean hasRegisteredConnection() {
+        CompletableFuture<String> future = this.rtaWebsocket.getConnectionIdFuture();
+        if (!future.isDone() || future.isCompletedExceptionally()) {
+            return false;
+        }
+        String connectionId = future.getNow(null);
+        return connectionId != null && this.sessionInfo != null && connectionId.equals(this.sessionInfo.getConnectionId());
     }
 
     /**
