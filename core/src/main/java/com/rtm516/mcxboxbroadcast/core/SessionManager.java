@@ -16,19 +16,26 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Simple manager to authenticate and create sessions on Xbox
  */
 public class SessionManager extends SessionManagerCore {
+    private static final long SUB_SESSION_RETRY_SECONDS = 30;
+
     private final ScheduledExecutorService scheduledThreadPool;
     private final Map<String, SubSessionManager> subSessionManagers;
+    // Cached sub-sessions whose creation is still being retried. They are not in the map
+    // yet, so add and remove consult this set and the retry stops once an ID leaves it
+    private final Set<String> pendingSubSessions = ConcurrentHashMap.newKeySet();
 
     private CoreConfig.FriendSyncConfig friendSyncConfig;
     private Runnable restartCallback;
@@ -44,7 +51,8 @@ public class SessionManager extends SessionManagerCore {
     public SessionManager(StorageManager storageManager, NotificationManager notificationManager, Logger logger) {
         super(storageManager, notificationManager, logger.prefixed("Primary Session"));
         this.scheduledThreadPool = Executors.newScheduledThreadPool(5, new NamedThreadFactory("MCXboxBroadcast Thread"));
-        this.subSessionManagers = new HashMap<>();
+        // Retried sub-session creation writes from a pool thread while the tick iterates
+        this.subSessionManagers = new ConcurrentHashMap<>();
     }
 
     @Override
@@ -112,22 +120,47 @@ public class SessionManager extends SessionManagerCore {
 
         // Create the sub-sessions in a new thread so we don't block the main thread
         List<String> finalSubSessions = subSessions;
+        pendingSubSessions.addAll(finalSubSessions);
         scheduledThreadPool.execute(() -> {
-            // Create the sub-session manager for each sub-session
             for (String subSession : finalSubSessions) {
-                try {
-                    SubSessionManager subSessionManager = new SubSessionManager(subSession, this, storageManager().subSession(subSession), notificationManager(), logger);
-                    subSessionManager.init();
-                    subSessionManager.friendManager().init(this.friendSyncConfig);
-                    subSessionManagers.put(subSession, subSessionManager);
-                } catch (SessionCreationException | SessionUpdateException e) {
-                    logger.error("Failed to create sub-session " + subSession, e);
-                    // TODO Retry creation after 30s or so
-                }
+                createSubSession(subSession);
             }
         });
 
         return this.initialized;
+    }
+
+    /**
+     * Create the manager for a cached sub-session, retrying until it succeeds.
+     * A stalled RTA handshake during startup must not drop the account until
+     * the next restart.
+     *
+     * @param id The ID of the sub-session to create
+     */
+    private void createSubSession(String id) {
+        if (!pendingSubSessions.contains(id)) {
+            return; // removed while waiting for a retry
+        }
+
+        SubSessionManager subSessionManager;
+        try {
+            subSessionManager = new SubSessionManager(id, this, storageManager().subSession(id), notificationManager(), logger);
+            subSessionManager.init();
+            subSessionManager.friendManager().init(this.friendSyncConfig);
+        } catch (SessionCreationException | SessionUpdateException e) {
+            logger.error("Failed to create sub-session " + id + ", retrying in " + SUB_SESSION_RETRY_SECONDS + " seconds", e);
+            if (!scheduledThreadPool.isShutdown()) {
+                scheduledThreadPool.schedule(() -> createSubSession(id), SUB_SESSION_RETRY_SECONDS, TimeUnit.SECONDS);
+            }
+            return;
+        }
+
+        // Removed while this attempt was running
+        if (!pendingSubSessions.remove(id)) {
+            subSessionManager.shutdown();
+            return;
+        }
+        subSessionManagers.put(id, subSessionManager);
     }
 
     @Override
@@ -228,6 +261,10 @@ public class SessionManager extends SessionManagerCore {
             coreLogger.error("Sub-session already exists with that ID");
             return;
         }
+        if (pendingSubSessions.contains(id)) {
+            coreLogger.error("Sub-session with that ID is still being created");
+            return;
+        }
 
         // Create the sub-session manager
         try {
@@ -240,12 +277,7 @@ public class SessionManager extends SessionManagerCore {
             return;
         }
 
-        // Update the list of sub-sessions
-        try {
-            storageManager().subSessions(Constants.GSON.toJson(subSessionManagers.keySet()));
-        } catch (JsonParseException | IOException e) {
-            coreLogger.error("Failed to update sub-session list", e);
-        }
+        saveSubSessionList();
     }
 
     /**
@@ -254,6 +286,12 @@ public class SessionManager extends SessionManagerCore {
      * @param id The ID of the sub-session to remove
      */
     public void removeSubSession(String id) {
+        // A cached sub-session whose creation is still being retried is not in the map yet
+        if (pendingSubSessions.remove(id)) {
+            cleanupRemovedSubSession(id);
+            return;
+        }
+
         // Make sure we have that ID
         if (!subSessionManagers.containsKey(id)) {
             coreLogger.error("Sub-session does not exist with that ID");
@@ -264,6 +302,10 @@ public class SessionManager extends SessionManagerCore {
         subSessionManagers.get(id).shutdown();
         subSessionManagers.remove(id);
 
+        cleanupRemovedSubSession(id);
+    }
+
+    private void cleanupRemovedSubSession(String id) {
         // Delete the sub-session cache file
         try {
             storageManager().subSession(id).cleanup();
@@ -271,14 +313,23 @@ public class SessionManager extends SessionManagerCore {
             coreLogger.error("Failed to delete sub-session cache file", e);
         }
 
-        // Update the list of sub-sessions
+        saveSubSessionList();
+
+        coreLogger.info("Removed sub-session with ID " + id);
+    }
+
+    /**
+     * Persist the sub-session list. Pending sub-sessions are not in the map yet but must
+     * survive a restart, so they are saved as well.
+     */
+    private void saveSubSessionList() {
+        Set<String> ids = new HashSet<>(subSessionManagers.keySet());
+        ids.addAll(pendingSubSessions);
         try {
-            storageManager().subSessions(Constants.GSON.toJson(subSessionManagers.keySet()));
+            storageManager().subSessions(Constants.GSON.toJson(ids));
         } catch (JsonParseException | IOException e) {
             coreLogger.error("Failed to update sub-session list", e);
         }
-
-        coreLogger.info("Removed sub-session with ID " + id);
     }
 
     /**

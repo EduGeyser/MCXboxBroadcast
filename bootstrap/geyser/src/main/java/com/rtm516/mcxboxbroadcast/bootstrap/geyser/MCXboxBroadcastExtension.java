@@ -247,7 +247,11 @@ public class MCXboxBroadcastExtension implements Extension {
                 return;
             }
         } catch (SessionCreationException | SessionUpdateException e) {
-            sessionManager.logger().error("Failed to create xbox session!", e);
+            // A stalled RTA handshake here used to leave the extension without a
+            // session until the next restart. Keep trying like checkConnection does.
+            int retrySeconds = config.session().updateInterval();
+            sessionManager.logger().error("Failed to create xbox session, retrying in " + retrySeconds + " seconds", e);
+            sessionManager.scheduledThread().schedule(this::createSession, retrySeconds, TimeUnit.SECONDS);
             return;
         }
 
