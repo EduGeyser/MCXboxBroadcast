@@ -2,7 +2,6 @@ package com.rtm516.mcxboxbroadcast.core;
 
 import com.github.mizosoft.methanol.Methanol;
 import com.google.gson.JsonParseException;
-import com.google.gson.JsonParser;
 import com.rtm516.mcxboxbroadcast.core.exceptions.AgeVerificationException;
 import com.rtm516.mcxboxbroadcast.core.exceptions.SessionCreationException;
 import com.rtm516.mcxboxbroadcast.core.exceptions.SessionUpdateException;
@@ -22,16 +21,16 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -39,6 +38,8 @@ import java.util.concurrent.TimeoutException;
  * Simple manager to authenticate and create sessions on Xbox
  */
 public abstract class SessionManagerCore {
+    private static final SecureRandom NONCE_RANDOM = new SecureRandom();
+
     private final AuthManager authManager;
     private final FriendManager friendManager;
     protected final HttpClient httpClient;
@@ -50,7 +51,7 @@ public abstract class SessionManagerCore {
 
     protected RtaWebsocketClient rtaWebsocket;
     protected ExpandedSessionInfo sessionInfo;
-    protected final Map<String, String> nonces = new HashMap<>();
+    protected final Map<String, String> nonces = new ConcurrentHashMap<>();
     protected String lastSessionResponse;
 
     protected boolean initialized = false;
@@ -162,12 +163,7 @@ public abstract class SessionManagerCore {
             return;
         }
 
-        int friendCount = -1;
-        try {
-            friendCount = friendManager.get().size();
-        } catch (Exception ignored) {}
-
-        logger.info("Successfully authenticated as " + getGamertag() + " (" + getXuid() + ") with " + friendCount + "/" + Constants.MAX_FRIENDS + " friends");
+        logger.info("Successfully authenticated as " + getGamertag() + " (" + getXuid() + ") with " + socialSummary().targetFriendCount() + "/" + Constants.MAX_FRIENDS + " friends");
 
         if (handleFriendship()) {
             logger.info("Waiting for friendship to be processed...");
@@ -345,8 +341,8 @@ public abstract class SessionManagerCore {
 
             // Collect active XUIDs from the session
             Set<String> activeXuids = new HashSet<>();
-            for (Map.Entry<String, SessionMember> entry : sessionResponse.members().entrySet()) {
-                activeXuids.add(entry.getValue().constants().get("system").xuid());
+            for (SessionMember member : sessionResponse.members().values()) {
+                activeXuids.add(member.constants().get("system").xuid());
             }
 
             // Remove our own xuid
@@ -359,7 +355,7 @@ public abstract class SessionManagerCore {
                 if (!nonces.containsKey(xuid)) {
                     // Generate a nonce
                     byte[] bytes = new byte[8];
-                    ThreadLocalRandom.current().nextBytes(bytes);
+                    NONCE_RANDOM.nextBytes(bytes);
                     StringBuilder hex = new StringBuilder(16);
                     for (byte b : bytes) {
                         hex.append(String.format("%02x", b));
@@ -558,13 +554,14 @@ public abstract class SessionManagerCore {
     }
 
     /**
-     * Get the current follower count for the current user
-     * @return The current follower count
+     * Get the social summary for the current user
+     * @return The current social summary
      */
     public SocialSummaryResponse socialSummary() {
         HttpRequest socialSummaryRequest = HttpRequest.newBuilder()
             .uri(Constants.SOCIAL_SUMMARY)
             .header("Authorization", getTokenHeader())
+            .header("x-xbl-contract-version", "3")
             .GET()
             .build();
 
@@ -574,7 +571,7 @@ public abstract class SessionManagerCore {
             logger.error("Unable to get current friend count", e);
         }
 
-        return new SocialSummaryResponse(-1, -1, false, false, false, false, "", -1, -1, "");
+        return new SocialSummaryResponse(-1, -1, -1, false, false, false, false, "", -1, false, -1, -1, -1, "");
     }
 
     /**
