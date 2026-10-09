@@ -19,6 +19,7 @@ import java.net.http.HttpResponse;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -29,6 +30,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 public class FriendManager {
+    private static final int MIN_RETRY_SECONDS = 30;
+
     private final HttpClient httpClient;
     private final Logger logger;
     private final SessionManagerCore sessionManager;
@@ -311,7 +314,12 @@ public class FriendManager {
      * This will also handle retrying requests if they fail due to rate limits or other errors
      */
     private void internalProcess() {
-        int retryAfter = 0;
+        // -1 until Xbox sends a Retry-After header
+        int retryAfter = -1;
+
+        // Anything from this set still queued at the end failed or was skipped after a failure
+        Set<String> queuedBefore = new HashSet<>(toAdd.keySet());
+        queuedBefore.addAll(toRemove.keySet());
 
         // Initialize the cache if it is null
         if (lastFriendCache == null) lastFriendCache = new ArrayList<>();
@@ -454,7 +462,17 @@ public class FriendManager {
 
         // If we still have friends to add or remove then schedule another run after the retry after time
         if (!toAdd.isEmpty() || !toRemove.isEmpty()) {
-            internalScheduledFuture = sessionManager.scheduledThread().schedule(this::internalProcess, retryAfter, TimeUnit.SECONDS);
+            // Without a Retry-After (network errors, unhandled error codes) a failed request
+            // would otherwise retry immediately in a tight loop
+            int delay;
+            if (retryAfter >= 0) {
+                delay = retryAfter;
+            } else {
+                boolean failed = queuedBefore.stream().anyMatch(xuid -> toAdd.containsKey(xuid) || toRemove.containsKey(xuid));
+                delay = failed ? MIN_RETRY_SECONDS : 0;
+            }
+
+            internalScheduledFuture = sessionManager.scheduledThread().schedule(this::internalProcess, delay, TimeUnit.SECONDS);
         }
     }
 
